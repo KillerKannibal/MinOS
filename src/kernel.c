@@ -9,6 +9,12 @@
 #include "string.h"
 #include "gui.h"
 
+// --- Kernel Information Constants ---
+#define KERNEL_NAME "MinOS"
+#define KERNEL_VERSION "0.1"
+#define KERNEL_ARCH "x86"
+#define KERNEL_VENDOR "KillerKannibal"
+
 volatile uint8_t mouse_left = 0;
 
 // --- Terminal / Shell Logic ---
@@ -20,7 +26,8 @@ typedef enum {
     MODE_SYSINFO,
     MODE_MONITOR,
     MODE_SETTINGS,
-    MODE_FILEMAN
+    MODE_FILEMAN,
+    MODE_GAME
 } term_mode_t;
 
 // --- Window Manager State ---
@@ -29,6 +36,10 @@ typedef struct {
     term_mode_t type;
     char title[64];
     int dragging;
+    int minimized;
+    int fullscreen;
+    int old_x, old_y, old_w, old_h; // Restore state
+    int resizing;
 } window_t;
 
 #define MAX_WINDOWS 10
@@ -105,6 +116,42 @@ void get_time_string(char* buf) {
 #define FILEMAN_MAX_ENTRIES 50
 dirent_t fileman_entries[FILEMAN_MAX_ENTRIES];
 int fileman_num_entries = 0;
+
+// --- 3D Game State (Wolf3D Clone) ---
+#define MAP_W 16
+#define MAP_H 16
+// 1 = Red Wall, 2 = Green Wall, 0 = Empty
+int world_map[MAP_W][MAP_H] = {
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,1,1,0,0,0,0,0,2,2,0,0,0,1},
+    {1,0,0,1,1,0,0,0,0,0,2,2,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,0,0,0,1,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+};
+
+// Fixed point math (16.16) to avoid floating point issues
+#define F_SHIFT 16
+#define F_MUL 65536
+#define TO_INT(x) ((x) >> F_SHIFT)
+#define TO_FIX(x) ((x) << F_SHIFT)
+#define ABS(x) ((x) < 0 ? -(x) : (x))
+
+// Player start position (3.5, 3.5)
+int p_x = TO_FIX(3) + 32768; 
+int p_y = TO_FIX(3) + 32768; 
+int p_dir_x = -F_MUL, p_dir_y = 0;
+int p_plane_x = 0, p_plane_y = 43690; // 0.66 * 65536
 
 // --- Helpers ---
 
@@ -229,6 +276,9 @@ void open_window(term_mode_t type) {
     window_t* win = &windows[window_count++];
     win->type = type;
     win->dragging = 0;
+    win->minimized = 0;
+    win->fullscreen = 0;
+    win->resizing = 0;
     
     // Default positions/sizes based on app type
     if (type == MODE_SHELL) {
@@ -253,6 +303,9 @@ void open_window(term_mode_t type) {
         win->x = 120; win->y = 120; win->w = 400; win->h = 400;
         strcpy(win->title, "File Manager");
         fileman_refresh();
+    } else if (type == MODE_GAME) {
+        win->x = 100; win->y = 100; win->w = 640; win->h = 480;
+        strcpy(win->title, "MinDoom");
     }
 }
 
@@ -314,6 +367,7 @@ void exec_command(char* input) {
         term_print("Available commands:");
         term_print("  help  - Show this message");
         term_print("  clear - Clear the terminal");
+        term_print("  fetch - Display system info");
         term_print("  cat <f> - Show file content");
         term_print("  edit <f> - Edit a file");
         term_print("  echo <msg> - Print a message");
@@ -364,7 +418,11 @@ void exec_command(char* input) {
         term_print(input + 5);
     }
     else if (strcmp(input, "ver") == 0) {
-        term_print("MinOS Kernel v0.1");
+        char ver_str[40];
+        strcpy(ver_str, KERNEL_NAME);
+        strcat(ver_str, " Kernel v");
+        strcat(ver_str, KERNEL_VERSION);
+        term_print(ver_str);
     }
     else if (strcmp(input, "reboot") == 0) {
         term_print("Rebooting system...");
@@ -418,27 +476,101 @@ void exec_command(char* input) {
             strcat(cwd, new_dir);
         }
     }
+    else if (strcmp(input, "fetch") == 0) {
+        #define MAX_ART_LINES 16
+        #define MAX_INFO_LINES 5
+
+        fs_node_t* node = finddir_fs(fs_root, ".config/fetch/minfetch.conf");
+        char art_buffer[1024];
+        char* art_lines[MAX_ART_LINES] = {0};
+        int art_line_count = 0;
+
+        if (node) {
+            uint32_t size = read_fs(node, 0, sizeof(art_buffer)-1, (uint8_t*)art_buffer);
+            art_buffer[size] = '\0';
+
+            char* p = art_buffer;
+            while (art_line_count < MAX_ART_LINES && p) {
+                art_lines[art_line_count++] = p;
+                char* newline = p;
+                while (*newline != '\n' && *newline != '\0') {
+                    newline++;
+                }
+                if (*newline == '\n') {
+                    if (p == newline && *(p+1) == '\0') break; // Handle trailing newline
+                    *newline = '\0';
+                    p = newline + 1;
+                } else {
+                    p = NULL; 
+                }
+            }
+        }
+
+        char info_lines[MAX_INFO_LINES][64];
+        char temp_val[20];
+
+        // Prepare info lines
+        strcpy(info_lines[0], "OS: ");
+        strcat(info_lines[0], KERNEL_NAME);
+        strcat(info_lines[0], " Kernel v");
+        strcat(info_lines[0], KERNEL_VERSION);
+
+        strcpy(info_lines[1], "CPU: 1 Core (");
+        strcat(info_lines[1], KERNEL_ARCH);
+        strcat(info_lines[1], ")");
+
+        int total_mem = 0;
+        if (global_mbinfo) total_mem = (global_mbinfo->mem_upper / 1024) + 1;
+        simple_itoa(total_mem, temp_val);
+        strcpy(info_lines[2], "Mem: ");
+        strcat(info_lines[2], temp_val);
+        strcat(info_lines[2], " MB");
+
+        strcpy(info_lines[3], "Res: ");
+        simple_itoa(screen_width, temp_val);
+        strcat(info_lines[3], temp_val);
+        strcat(info_lines[3], "x");
+        simple_itoa(screen_height, temp_val);
+        strcat(info_lines[3], temp_val);
+
+        strcpy(info_lines[4], "Dev: ");
+        strcat(info_lines[4], KERNEL_VENDOR);
+
+        // Print interleaved
+        char line_buf[MAX_TERM_COLS];
+        int max_lines = (art_line_count > MAX_INFO_LINES) ? art_line_count : MAX_INFO_LINES;
+        int info_start_line = (art_line_count > MAX_INFO_LINES) ? (art_line_count - MAX_INFO_LINES) / 2 : 0;
+
+        for (int i = 0; i < max_lines; i++) {
+            line_buf[0] = '\0';
+            
+            // Add art part
+            if (i < art_line_count && art_lines[i]) {
+                strcpy(line_buf, art_lines[i]);
+            }
+
+            // Add info part
+            int info_idx = i - info_start_line;
+            if (info_idx >= 0 && info_idx < MAX_INFO_LINES) {
+                // Add padding if there is art on this line
+                if (i < art_line_count && art_lines[i] && strlen(art_lines[i]) > 0) {
+                    strcat(line_buf, " ");
+                }
+                strcat(line_buf, info_lines[info_idx]);
+            }
+            term_print(line_buf);
+        }
+    }
     else {
         term_print("Unknown command.");
     }
 }
 
-void draw_taskbar() {
-    draw_rect(0, screen_height - 40, screen_width, 40, 0x111111);
-    draw_rect(0, screen_height - 40, screen_width, 2, 0x333333); // Highlight
-    draw_string("Start", 10, screen_height - 25, 0xFFFFFF);
-
-    // Draw Clock
-    char time_str[10];
-    get_time_string(time_str);
-    draw_string(time_str, screen_width - 60, screen_height - 25, 0xFFFFFF);
-}
-
 void draw_start_menu() {
-    int y = screen_height - 240; 
-    draw_rect(0, y, 160, 200, 0x222222); // Menu Body
+    int y = screen_height - 265; 
+    draw_rect(0, y, 160, 225, 0x222222); // Menu Body
     draw_rect(0, y, 160, 2, 0x444444);   // Top Highlight
-    draw_rect(158, y, 2, 200, 0x111111); // Side Shadow
+    draw_rect(158, y, 2, 225, 0x111111); // Side Shadow
 
     draw_string("Terminal", 15, y + 10, 0xFFFFFF);
     draw_string("Text Editor", 15, y + 35, 0xFFFFFF);
@@ -446,9 +578,58 @@ void draw_start_menu() {
     draw_string("Resource Mon", 15, y + 85, 0xFFFFFF);
     draw_string("Settings", 15, y + 110, 0xFFFFFF);
     draw_string("File Manager", 15, y + 135, 0xFFFFFF);
-    draw_string("About MinOS", 15, y + 160, 0xFFFFFF);
+    draw_string("Play Game", 15, y + 160, 0xFFFFFF);
+    draw_string("About MinOS", 15, y + 185, 0xFFFFFF);
     
-    draw_rect(5, y + 185, 150, 1, 0x555555); // Separator
+    draw_rect(5, y + 210, 150, 1, 0x555555); // Separator
+}
+
+// Helper to draw standard window controls
+void draw_window_buttons(window_t* win, int x, int y, int w) {
+    // Minimize Button [-]
+    draw_rect(x + w - 66, y + 2, 20, 20, 0x95A5A6);
+    draw_char('-', x + w - 60, y + 8, 0xFFFFFF);
+
+    // Maximize/Restore Button [+]
+    draw_rect(x + w - 44, y + 2, 20, 20, 0x95A5A6);
+    draw_char(win->fullscreen ? '^' : '+', x + w - 38, y + 8, 0xFFFFFF);
+
+    // Close Button [X]
+    draw_rect(x + w - 22, y + 2, 20, 20, 0xC0392B);
+    draw_char('X', x + w - 16, y + 8, 0xFFFFFF);
+}
+
+void draw_taskbar() {
+    draw_rect(0, screen_height - 40, screen_width, 40, 0x111111);
+    draw_rect(0, screen_height - 40, screen_width, 2, 0x333333); // Highlight
+    draw_string("Start", 10, screen_height - 25, 0xFFFFFF);
+
+    // Draw Open Windows
+    int start_x = 70;
+    for (int i = 0; i < window_count; i++) {
+        int b_x = start_x + (i * 130);
+        // Highlight active window (last in array)
+        uint32_t col = (i == window_count - 1 && !windows[i].minimized) ? 0x444444 : 0x222222;
+        if (windows[i].minimized) col = 0x111111; // Darker if minimized
+        
+        draw_rect(b_x, screen_height - 38, 125, 38, col);
+        
+        // Truncate title for taskbar
+        char short_title[16];
+        int len = 0;
+        while(windows[i].title[len] && len < 14) {
+            short_title[len] = windows[i].title[len];
+            len++;
+        }
+        short_title[len] = '\0';
+        
+        draw_string(short_title, b_x + 5, screen_height - 25, 0xCCCCCC);
+    }
+
+    // Draw Clock
+    char time_str[10];
+    get_time_string(time_str);
+    draw_string(time_str, screen_width - 60, screen_height - 25, 0xFFFFFF);
 }
 
 void draw_window(window_t* win) {
@@ -463,8 +644,8 @@ void draw_window(window_t* win) {
         strcpy(editor_title, "Editing: ");
         strcpy(editor_title + 9, editor_filename);
         draw_rect(x, y, w, 25, 0xD35400); // Orange title bar for editor
+        draw_window_buttons(win, x, y, w);
         draw_string(editor_title, x + 8, y + 8, 0xFFFFFF);
-        draw_string("ESC to Close", x + w - 90, y + 8, 0xFFFFFF);
 
         // Draw editor content
         for (int i = 0; i < editor_num_lines; i++) {
@@ -480,6 +661,7 @@ void draw_window(window_t* win) {
     } 
     else if (win->type == MODE_CALC) {
         draw_rect(x, y, w, 25, 0x27AE60); // Green Title Bar
+        draw_window_buttons(win, x, y, w);
         draw_string("Calculator", x + 8, y + 8, 0xFFFFFF);
         
         // Display box
@@ -488,10 +670,11 @@ void draw_window(window_t* win) {
         draw_string("Result:", x + 50, y + 160, 0xAAAAAA);
         draw_string(calc_result, x + 110, y + 160, 0x2ECC71);
         
-        draw_string("Type expression (e.g. 12+5) and Enter", x + 50, y + 300, 0x777777);
+        draw_string("Type expression (e.g. 12+5) and Enter", x + 50, y + 300, 0xCCCCCC);
     }
     else if (win->type == MODE_MONITOR) {
         draw_rect(x, y, w, 25, 0xE67E22); // Carrot Orange Title Bar
+        draw_window_buttons(win, x, y, w);
         draw_string("System Monitor", x + 8, y + 8, 0xFFFFFF);
 
         draw_string("CPU: 1 Core (x86)", x + 20, y + 50, 0xFFFFFF);
@@ -521,6 +704,7 @@ void draw_window(window_t* win) {
     }
     else if (win->type == MODE_SETTINGS) {
         draw_rect(x, y, w, 25, 0x34495E); // Dark Slate Title Bar
+        draw_window_buttons(win, x, y, w);
         draw_string("Settings", x + 8, y + 8, 0xFFFFFF);
 
         draw_string("Background:", x + 20, y + 50, 0xFFFFFF);
@@ -532,9 +716,83 @@ void draw_window(window_t* win) {
         draw_rect(x + 120, y + 75, 100, 20, 0x555555); // Fake Button
         draw_string("Dark", x + 130, y + 80, 0xFFFFFF);
     }
+    else if (win->type == MODE_GAME) {
+        draw_rect(x, y, w, 25, 0x800000); // DarkRed Title Bar
+        draw_window_buttons(win, x, y, w);
+        draw_string("MinDoom (WASD + Mouse)", x + 8, y + 8, 0xFFFFFF);
+
+        // Raycasting Rendering Loop
+        int view_w = w;
+        int view_h = h - 25;
+        int view_x = x;
+        int view_y = y + 25;
+
+        // Draw Ceiling and Floor
+        draw_rect(view_x, view_y, view_w, view_h / 2, 0x333333); 
+        draw_rect(view_x, view_y + view_h / 2, view_w, view_h / 2, 0x555555);
+
+        // Cast a ray for every vertical column
+        for(int col = 0; col < view_w; col++) {
+            // Calculate ray position and direction
+            int cameraX = ((2 * col * F_MUL) / view_w) - F_MUL; 
+            int rayDirX = p_dir_x + ((p_plane_x * cameraX) >> 16);
+            int rayDirY = p_dir_y + ((p_plane_y * cameraX) >> 16);
+            
+            int mapX = TO_INT(p_x);
+            int mapY = TO_INT(p_y);
+            
+            // Length of ray from one x or y-side to next x or y-side
+            // deltaDist = abs(1 / rayDir)
+            int deltaDistX = (rayDirX == 0) ? 2000000000 : (((int64_t)F_MUL * F_MUL) / ABS(rayDirX)); 
+            int deltaDistY = (rayDirY == 0) ? 2000000000 : (((int64_t)F_MUL * F_MUL) / ABS(rayDirY));
+            
+            int stepX, stepY, sideDistX, sideDistY, side;
+            
+            if (rayDirX < 0) {
+                stepX = -1;
+                sideDistX = ((int64_t)(p_x - TO_FIX(mapX)) * deltaDistX) >> 16;
+            } else {
+                stepX = 1;
+                sideDistX = ((int64_t)(TO_FIX(mapX + 1) - p_x) * deltaDistX) >> 16;
+            }
+            if (rayDirY < 0) {
+                stepY = -1;
+                sideDistY = ((int64_t)(p_y - TO_FIX(mapY)) * deltaDistY) >> 16;
+            } else {
+                stepY = 1;
+                sideDistY = ((int64_t)(TO_FIX(mapY + 1) - p_y) * deltaDistY) >> 16;
+            }
+            
+            // DDA Wall Hit
+            int hit = 0;
+            while (hit == 0) {
+                if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; }
+                else                       { sideDistY += deltaDistY; mapY += stepY; side = 1; }
+                if (world_map[mapX][mapY] > 0) hit = 1;
+            }
+            
+            int perpWallDist;
+            if (side == 0) perpWallDist = sideDistX - deltaDistX;
+            else           perpWallDist = sideDistY - deltaDistY;
+            if (perpWallDist == 0) perpWallDist = 1;
+
+            int lineHeight = (int)((view_h * F_MUL) / perpWallDist);
+            int drawStart = -lineHeight / 2 + view_h / 2;
+            if (drawStart < 0) drawStart = 0;
+            int drawEnd = lineHeight / 2 + view_h / 2;
+            if (drawEnd >= view_h) drawEnd = view_h - 1;
+            
+            int color = 0xAA0000; // Red
+            if (world_map[mapX][mapY] == 2) color = 0x00AA00; // Green
+            if (side == 1) color = (color >> 1) & 0x7F7F7F; // Shade darker for one side
+            
+            draw_rect(view_x + col, view_y + drawStart, 1, drawEnd - drawStart, color);
+        }
+    }
     else if (win->type == MODE_FILEMAN) {
         draw_rect(x, y, w, 25, 0xF1C40F); // Yellow Title Bar
-        draw_string("File Manager", x + 8, y + 8, 0xFFFFFF);
+        draw_window_buttons(win, x, y, w);
+        draw_string("File Manager", x + 8, y + 8, 0x000000); // Black text on Yellow
 
         for (int i = 0; i < fileman_num_entries; i++) {
             // Get basename (part after the last /)
@@ -557,12 +815,20 @@ void draw_window(window_t* win) {
     }
     else if (win->type == MODE_SYSINFO) {
         draw_rect(x, y, w, 25, 0x8E44AD); // Purple Title Bar
+        draw_window_buttons(win, x, y, w);
         draw_string("About MinOS", x + 8, y + 8, 0xFFFFFF);
 
-        draw_string("MinOS Kernel v0.1", x + 20, y + 50, 0xFFFFFF);
-        draw_string("Developed by KillerKannibal", x + 20, y + 70, 0xAAAAAA);
+        char ver_str[64];
+        strcpy(ver_str, KERNEL_NAME);
+        strcat(ver_str, " Kernel v");
+        strcat(ver_str, KERNEL_VERSION);
+        draw_string(ver_str, x + 20, y + 50, 0xFFFFFF);
+
+        strcpy(ver_str, "Developed by ");
+        strcat(ver_str, KERNEL_VENDOR);
+        draw_string(ver_str, x + 20, y + 70, 0xAAAAAA);
         
-        draw_string("Resolution: 1024x768", x + 20, y + 110, 0xFFFFFF);
+        draw_string("Resolution: 1920x1080", x + 20, y + 110, 0xFFFFFF);
         if (global_mbinfo) {
              // We could format memory info here if we had printf
              draw_string("Multiboot Info Detected", x + 20, y + 130, 0x00FF00);
@@ -570,11 +836,8 @@ void draw_window(window_t* win) {
     }
     else { // MODE_SHELL (Default)
         draw_rect(x, y, w, 25, 0x2980B9);        // Blue Title Bar
+        draw_window_buttons(win, x, y, w);
         draw_string(win->title, x + 8, y + 8, 0xFFFFFF);
-        
-        // Close Button
-        draw_rect(x + w - 22, y + 2, 20, 20, 0xC0392B);
-        draw_char('X', x + w - 15, y + 8, 0xFFFFFF);
 
         for (int i = 0; i < MAX_TERM_LINES; i++) {
             draw_string(term_buffer[i], x + 5, y + 35 + (i * 10), 0xCCCCCC);
@@ -586,7 +849,12 @@ void draw_window(window_t* win) {
         strcat(prompt, ">");
         draw_string(prompt, x + 5, y + h - 20, 0x2ECC71); // Green Prompt
         int prompt_width = strlen(prompt) * 8;
-        draw_string(keyboard_buffer, x + 5 + prompt_width + 8, y + h - 20, 0x000000);
+        draw_string(keyboard_buffer, x + 5 + prompt_width + 8, y + h - 20, 0xFFFFFF);
+    }
+
+    // Draw resize handle on non-fullscreen windows
+    if (!win->fullscreen) {
+        draw_rect(x + w - 10, y + h - 10, 10, 10, 0x444444);
     }
 }
 
@@ -608,10 +876,29 @@ uint8_t cursor_bitmap[] = {
     2,2,0,0,0,0,0,0,0,0,0,0,
 };
 
+// 12x12 bitmap for resize cursor (NW-SE arrow)
+uint8_t resize_cursor_bitmap[] = {
+    2,2,0,0,0,0,0,0,0,0,0,0,
+    2,1,2,0,0,0,0,0,0,0,0,0,
+    0,2,1,2,0,0,0,0,0,0,0,0,
+    0,0,2,1,2,0,0,0,0,0,0,0,
+    0,0,0,2,1,2,0,0,0,0,0,0,
+    0,0,0,0,2,1,2,0,0,0,0,0,
+    0,0,0,0,0,2,1,2,0,0,0,0,
+    0,0,0,0,0,0,2,1,2,0,0,0,
+    0,0,0,0,0,0,0,2,1,2,0,0,
+    0,0,0,0,0,0,0,0,2,1,2,0,
+    0,0,0,0,0,0,0,0,0,2,1,2,
+    0,0,0,0,0,0,0,0,0,0,2,2,
+};
+
+int mouse_on_resize_handle = 0;
+
 void draw_cursor(int x, int y) {
+    uint8_t* bitmap = mouse_on_resize_handle ? resize_cursor_bitmap : cursor_bitmap;
     for(int i = 0; i < 12; i++) {
         for(int j = 0; j < 12; j++) {
-            uint8_t pixel = cursor_bitmap[i * 12 + j];
+            uint8_t pixel = bitmap[i * 12 + j];
             if (pixel == 1) {
                 // Turn Red (0xFF0000) if holding left click, otherwise White
                 draw_pixel(x+j, y+i, mouse_left ? 0xFF0000 : 0xFFFFFF);
@@ -627,34 +914,30 @@ volatile int mouse_y = 384;
 volatile uint8_t mouse_cycle = 0;
 uint8_t mouse_byte[3];
 
-// --- Keyboard Logic ---
+// --- INPUT SYSTEM ---
 
-// A basic US QWERTY scancode to ASCII map.
-unsigned char keyboard_map[128] = {
-    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    '-', 0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-};
-
-// --- Mouse Logic ---
+uint8_t shift_pressed = 0;
+uint8_t ctrl_pressed = 0;
 
 void mouse_wait(uint8_t type) {
     uint32_t timeout = 100000;
+
     if (type == 0) {
-        while (timeout--) { if ((inb(0x64) & 1) == 1) return; }
+        while (timeout--) {
+            if (inb(0x64) & 1) return;
+        }
     } else {
-        while (timeout--) { if ((inb(0x64) & 2) == 0) return; }
+        while (timeout--) {
+            if (!(inb(0x64) & 2)) return;
+        }
     }
 }
 
-void mouse_write(uint8_t write) {
+void mouse_write(uint8_t data) {
     mouse_wait(1);
     outb(0x64, 0xD4);
     mouse_wait(1);
-    outb(0x60, write);
+    outb(0x60, data);
 }
 
 uint8_t mouse_read() {
@@ -664,175 +947,266 @@ uint8_t mouse_read() {
 
 void mouse_install() {
     uint8_t status;
+
     mouse_wait(1);
     outb(0x64, 0xA8);
+
     mouse_wait(1);
     outb(0x64, 0x20);
     mouse_wait(0);
-    status = (inb(0x60) | 2);
+
+    status = inb(0x60);
+    status |= 2;
+
     mouse_wait(1);
     outb(0x64, 0x60);
+
     mouse_wait(1);
     outb(0x60, status);
+
     mouse_write(0xF6);
     mouse_read();
+
     mouse_write(0xF4);
     mouse_read();
 }
 
 void mouse_handler() {
-    // When IRQ12 fires, we MUST read the data port to clear the interrupt.
+
     uint8_t data = inb(0x60);
 
-    // This is a state machine for handling 3-byte mouse packets.
-    // The first byte of a packet always has bit 3 set. We can use this
-    // to synchronize if we ever get out of step.
     if (mouse_cycle == 0) {
-        // Expecting the first byte (status byte). Check for the sync bit (bit 3).
-        if ((data & 0x08) != 0) {
+        if (data & 0x08) {
             mouse_byte[0] = data;
             mouse_cycle++;
         }
-        // If sync bit is not set, we are out of sync. Discard this byte
-        // and wait for a byte that looks like a proper status byte.
-    } else {
-        // Expecting the second or third byte (movement data)
-        mouse_byte[mouse_cycle++] = data;
-
-        if (mouse_cycle >= 3) {
-            mouse_cycle = 0; // Reset for the next packet
-
-            // We have a full packet, now interpret it.
-            int x_move = mouse_byte[1];
-            int y_move = mouse_byte[2];
-
-            // Handle sign extension for 9-bit signed values
-            if (mouse_byte[0] & 0x10) x_move |= 0xFFFFFF00; // X sign bit
-            if (mouse_byte[0] & 0x20) y_move |= 0xFFFFFF00; // Y sign bit
-            
-            // Update button state (Bit 0 = Left Click)
-            mouse_left = (mouse_byte[0] & 0x01);
-
-            // Y-movement is inverted in screen coordinates
-            mouse_x += x_move;
-            mouse_y -= y_move;
-
-            // Clamp cursor to screen bounds
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x >= (int)screen_width) mouse_x = screen_width - 1;
-            if (mouse_y >= (int)screen_height) mouse_y = screen_height - 1;
-        }
+        return;
     }
+
+    mouse_byte[mouse_cycle++] = data;
+
+    if (mouse_cycle < 3) return;
+
+    mouse_cycle = 0;
+
+    int x_move = mouse_byte[1];
+    int y_move = mouse_byte[2];
+
+    if (mouse_byte[0] & 0x10) x_move |= 0xFFFFFF00;
+    if (mouse_byte[0] & 0x20) y_move |= 0xFFFFFF00;
+
+    mouse_left = mouse_byte[0] & 1;
+
+    mouse_x += x_move;
+    mouse_y -= y_move;
+
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_y < 0) mouse_y = 0;
+
+    if (mouse_x >= (int)screen_width) mouse_x = screen_width - 1;
+    if (mouse_y >= (int)screen_height) mouse_y = screen_height - 1;
 }
 
+// --- Keyboard Maps ---
+
+unsigned char keyboard_map[128] = {
+0,27,'1','2','3','4','5','6','7','8','9','0','-','=','\b',
+'\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
+0,'a','s','d','f','g','h','j','k','l',';','\'','`',
+0,'\\','z','x','c','v','b','n','m',',','.','/',0,
+'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+'-',0,0,0,'+',0,0,0,0,0,0,0,0,0,0,0
+};
+
+unsigned char keyboard_map_shifted[128] = {
+0,27,'!','@','#','$','%','^','&','*','(',')','_','+','\b',
+'\t','Q','W','E','R','T','Y','U','I','O','P','{','}','\n',
+0,'A','S','D','F','G','H','J','K','L',':','"','~',
+0,'|','Z','X','C','V','B','N','M','<','>','?',0,
+'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+'-',0,0,0,'+',0,0,0,0,0,0,0,0,0,0,0
+};
+
+
+
 void keyboard_handler() {
+
     uint8_t scancode = inb(0x60);
-    
-    if (scancode & 0x80) return; // Ignore key releases
 
-    if (window_count == 0) return; // No windows open
-    
-    window_t* active_win = &windows[window_count - 1]; // Top-most window
+    if (scancode & 0x80) return;
 
+    char c = shift_pressed ? keyboard_map_shifted[scancode] : keyboard_map[scancode];
+
+    if (window_count == 0) return;
+
+    window_t* active_win = &windows[window_count - 1];
+
+    // ---------- EDITOR ----------
     if (active_win->type == MODE_EDITOR) {
-        if (scancode == 1) { // ESC
-            close_window(window_count - 1);
-            return;
-        }
 
-        char c = keyboard_map[scancode];
         char* line = editor_buffer[editor_cursor_y];
         int line_len = strlen(line);
 
-        if (c == '\b') { // Backspace
+        if (c == '\b') {
             if (editor_cursor_x > 0) {
-                memmove(&line[editor_cursor_x - 1], &line[editor_cursor_x], line_len - editor_cursor_x + 1);
+                memmove(&line[editor_cursor_x - 1], &line[editor_cursor_x],
+                        line_len - editor_cursor_x + 1);
                 editor_cursor_x--;
-            } else if (editor_cursor_y > 0) {
-                int prev_line_len = strlen(editor_buffer[editor_cursor_y - 1]);
-                if (prev_line_len + line_len < EDITOR_MAX_COLS) {
-                    strcpy(&editor_buffer[editor_cursor_y - 1][prev_line_len], line);
-                    for (int i = editor_cursor_y; i < editor_num_lines - 1; i++) {
-                        strcpy(editor_buffer[i], editor_buffer[i+1]);
-                    }
-                    editor_num_lines--;
-                    editor_cursor_y--;
-                    editor_cursor_x = prev_line_len;
-                }
             }
-        } else if (c == '\n') { // Enter
+        }
+        else if (c == '\n') {
+
             if (editor_num_lines < EDITOR_MAX_LINES - 1) {
-                for (int i = editor_num_lines; i > editor_cursor_y + 1; i--) {
-                    strcpy(editor_buffer[i], editor_buffer[i-1]);
-                }
-                strcpy(editor_buffer[editor_cursor_y + 1], &line[editor_cursor_x]);
+
+                for (int i = editor_num_lines; i > editor_cursor_y + 1; i--)
+                    strcpy(editor_buffer[i], editor_buffer[i - 1]);
+
+                strcpy(editor_buffer[editor_cursor_y + 1],
+                       &line[editor_cursor_x]);
+
                 line[editor_cursor_x] = '\0';
-                editor_num_lines++;
+
                 editor_cursor_y++;
                 editor_cursor_x = 0;
+                editor_num_lines++;
             }
-        } else if (c != 0) { // Printable character
+        }
+        else if (c != 0) {
+
             if (line_len < EDITOR_MAX_COLS - 1) {
-                memmove(&line[editor_cursor_x + 1], &line[editor_cursor_x], line_len - editor_cursor_x + 1);
+
+                memmove(&line[editor_cursor_x + 1],
+                        &line[editor_cursor_x],
+                        line_len - editor_cursor_x + 1);
+
                 line[editor_cursor_x] = c;
                 editor_cursor_x++;
             }
         }
-        // Clamp cursor X
-        line_len = strlen(editor_buffer[editor_cursor_y]);
-        if (editor_cursor_x > line_len) editor_cursor_x = line_len;
-    } 
-    else if (active_win->type == MODE_CALC) {
-        char c = keyboard_map[scancode];
-        if (c == '\b') {
-            if (calc_len > 0) calc_buffer[--calc_len] = '\0';
-        } 
-        else if (c == '\n') {
-             // Parse A op B
-             int op_idx = -1;
-             char op = 0;
-             for(int i=0; i<calc_len; i++) {
-                 if (calc_buffer[i] == '+' || calc_buffer[i] == '-' || 
-                     calc_buffer[i] == '*' || calc_buffer[i] == '/') {
-                     op_idx = i;
-                     op = calc_buffer[i];
-                     break;
-                 }
-             }
-             if (op_idx != -1) {
-                 char left[32], right[32];
-                 strcpy(left, calc_buffer); left[op_idx] = '\0';
-                 strcpy(right, calc_buffer + op_idx + 1);
-                 int a = simple_atoi(left);
-                 int b = simple_atoi(right);
-                 int res = 0;
-                 if (op == '+') res = a + b;
-                 if (op == '-') res = a - b;
-                 if (op == '*') res = a * b;
-                 if (op == '/' && b != 0) res = a / b;
-                 simple_itoa(res, calc_result);
-             }
-        } 
-        else if ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '*' || c == '/') {
-            if (calc_len < 30) { calc_buffer[calc_len++] = c; calc_buffer[calc_len] = '\0'; }
-        }
+
+        return;
     }
-    else if (active_win->type == MODE_SHELL) { // MODE_SHELL
-        char c = keyboard_map[scancode];
+
+    // ---------- GAME ----------
+    if (active_win->type == MODE_GAME) {
+
+        int moveSpeed = 8000;
+
+        if (c == 'w') {
+
+            int nextX = p_x + ((p_dir_x * moveSpeed) >> 16);
+            int nextY = p_y + ((p_dir_y * moveSpeed) >> 16);
+
+            if (world_map[TO_INT(nextY)][TO_INT(p_x)] == 0)
+                p_y = nextY;
+
+            if (world_map[TO_INT(p_y)][TO_INT(nextX)] == 0)
+                p_x = nextX;
+        }
+
+        if (c == 's') {
+
+            int nextX = p_x - ((p_dir_x * moveSpeed) >> 16);
+            int nextY = p_y - ((p_dir_y * moveSpeed) >> 16);
+
+            if (world_map[TO_INT(nextY)][TO_INT(p_x)] == 0)
+                p_y = nextY;
+
+            if (world_map[TO_INT(p_y)][TO_INT(nextX)] == 0)
+                p_x = nextX;
+        }
+
+        return;
+    }
+
+    // ---------- CALCULATOR ----------
+    if (active_win->type == MODE_CALC) {
+
         if (c == '\b') {
-            if (kb_buffer_len > 0) kb_buffer_len--;
-        } else if (c == '\n') { // Handle Enter
+            if (calc_len > 0)
+                calc_buffer[--calc_len] = '\0';
+        }
+
+        else if (c == '\n') {
+
+            int op_idx = -1;
+            char op = 0;
+
+            for (int i = 0; i < calc_len; i++) {
+
+                if (calc_buffer[i] == '+' ||
+                    calc_buffer[i] == '-' ||
+                    calc_buffer[i] == '*' ||
+                    calc_buffer[i] == '/') {
+
+                    op_idx = i;
+                    op = calc_buffer[i];
+                    break;
+                }
+            }
+
+            if (op_idx != -1) {
+
+                char left[32], right[32];
+
+                strcpy(left, calc_buffer);
+                left[op_idx] = '\0';
+
+                strcpy(right, calc_buffer + op_idx + 1);
+
+                int a = simple_atoi(left);
+                int b = simple_atoi(right);
+
+                int res = 0;
+
+                if (op == '+') res = a + b;
+                if (op == '-') res = a - b;
+                if (op == '*') res = a * b;
+                if (op == '/' && b != 0) res = a / b;
+
+                simple_itoa(res, calc_result);
+            }
+        }
+
+        else if (c != 0) {
+
+            if (calc_len < 30) {
+
+                calc_buffer[calc_len++] = c;
+                calc_buffer[calc_len] = '\0';
+            }
+        }
+
+        return;
+    }
+
+    // ---------- SHELL ----------
+    if (active_win->type == MODE_SHELL) {
+
+        if (c == '\b') {
+
+            if (kb_buffer_len > 0)
+                kb_buffer_len--;
+        }
+
+        else if (c == '\n') {
+
             keyboard_buffer[kb_buffer_len] = '\0';
             exec_command(keyboard_buffer);
+
             kb_buffer_len = 0;
-        } else if (c != 0 && kb_buffer_len < KB_BUFFER_SIZE - 1) {
-            keyboard_buffer[kb_buffer_len++] = c;
         }
-        keyboard_buffer[kb_buffer_len] = '\0';
+
+        else if (c != 0) {
+
+            if (kb_buffer_len < KB_BUFFER_SIZE - 1) {
+
+                keyboard_buffer[kb_buffer_len++] = c;
+                keyboard_buffer[kb_buffer_len] = '\0';
+            }
+        }
     }
 }
-
 // --- Kernel Entry ---
 
 void kernel_main(struct multiboot_info* mbinfo) {
@@ -867,6 +1241,8 @@ void kernel_main(struct multiboot_info* mbinfo) {
     // --- Init VFS and Read File ---
     init_fs(mod_start);
     
+    init_desktop_buffer(wallpaper_mode);
+
     // Welcome message
     term_print("Welcome to MinOS!");
     term_print("Type 'help' for commands.");
@@ -880,15 +1256,40 @@ void kernel_main(struct multiboot_info* mbinfo) {
         int mouse_dx = mouse_x - prev_mouse_x;
         int mouse_dy = mouse_y - prev_mouse_y;
 
+        // --- Check for Resize Handle Hover ---
+        mouse_on_resize_handle = 0;
+        // Only check when not actively dragging/resizing to prevent cursor flicker
+        if (!mouse_left) {
+            for (int i = window_count - 1; i >= 0; i--) {
+                window_t* win = &windows[i];
+                if (!win->minimized && !win->fullscreen) {
+                    int resize_x = win->x + win->w;
+                    int resize_y = win->y + win->h;
+                    if (mouse_x >= resize_x - 16 && mouse_x <= resize_x &&
+                        mouse_y >= resize_y - 16 && mouse_y <= resize_y) {
+                        mouse_on_resize_handle = 1;
+                        break; // Found top-most, so stop
+                    }
+                }
+            }
+        }
+
         // --- Click Logic ---
         if (mouse_left && !prev_mouse_left) { // On Click Press
-            // Check Start Button Click (0, H-40, 60, 40)
-            if (mouse_x >= 0 && mouse_x <= 60 && mouse_y >= (int)screen_height - 40) {
+            if (mouse_on_resize_handle) {
+                // Find which window to resize (topmost one under cursor)
+                for (int i = window_count - 1; i >= 0; i--) {
+                    window_t* win = &windows[i];
+                     if (!win->minimized && !win->fullscreen && mouse_x >= win->x + win->w - 16 && mouse_y >= win->y + win->h - 16) {
+                        open_window(win->type); // Bring to front
+                        windows[window_count - 1].resizing = 1;
+                        break;
+                    }
+                }
+            } else if (mouse_x >= 0 && mouse_x <= 60 && mouse_y >= (int)screen_height - 40) {
                 start_menu_open = !start_menu_open;
-            }
-            // Check Start Menu Items
-            else if (start_menu_open && mouse_x >= 0 && mouse_x <= 160 && mouse_y >= (int)screen_height - 240) {
-                int y_rel = mouse_y - ((int)screen_height - 240);
+            } else if (start_menu_open && mouse_x >= 0 && mouse_x <= 160 && mouse_y >= (int)screen_height - 265) {
+                int y_rel = mouse_y - ((int)screen_height - 265);
                 
                 if (y_rel >= 10 && y_rel < 35) { // Terminal
                     open_window(MODE_SHELL);
@@ -909,36 +1310,89 @@ void kernel_main(struct multiboot_info* mbinfo) {
                 } else if (y_rel >= 135 && y_rel < 160) { // File Manager
                     open_window(MODE_FILEMAN);
                     start_menu_open = 0;
-                } else if (y_rel >= 160 && y_rel < 185) { // About
+                } else if (y_rel >= 160 && y_rel < 185) { // Game
+                    open_window(MODE_GAME);
+                    start_menu_open = 0;
+                } else if (y_rel >= 185 && y_rel < 210) { // About
                     open_window(MODE_SYSINFO);
                     start_menu_open = 0;
                 }
             } else {
-                if (start_menu_open) start_menu_open = 0; // Clicked outside
+                // Check Taskbar App List Click
+                if (mouse_y >= (int)screen_height - 40 && mouse_x > 70) {
+                    int clicked_idx = (mouse_x - 70) / 130;
+                    if (clicked_idx >= 0 && clicked_idx < window_count) {
+                        // Logic:
+                        // 1. If minimized, restore and focus.
+                        // 2. If not active, focus.
+                        // 3. If active and top, minimize.
+                        
+                        // We need to match the specific window in the array.
+                        // Since draw_taskbar iterates 0..window_count, clicked_idx corresponds to index.
+                        if (windows[clicked_idx].minimized) {
+                            windows[clicked_idx].minimized = 0;
+                            open_window(windows[clicked_idx].type); // Bring to front
+                        } else if (clicked_idx == window_count - 1) {
+                            // Already active, so minimize
+                            windows[clicked_idx].minimized = 1;
+                        } else {
+                            open_window(windows[clicked_idx].type); // Bring to front
+                        }
+                    }
+                }
                 
+                if (start_menu_open) start_menu_open = 0; // Clicked outside
                 // Window Management (Reverse order to click top-most first)
                 for(int i = window_count - 1; i >= 0; i--) {
                     window_t* win = &windows[i];
-                    if (mouse_x >= win->x && mouse_x <= win->x + win->w &&
+                    if (!win->minimized && 
+                        mouse_x >= win->x && mouse_x <= win->x + win->w &&
                         mouse_y >= win->y && mouse_y <= win->y + win->h) {
                         
                         // Bring to front
                         open_window(win->type); // Re-opening essentially focuses it in our logic
                         win = &windows[window_count - 1]; // Update pointer to new location
 
-                        // Check Close Button (Top right approx 20x20)
-                        if (mouse_x >= win->x + win->w - 25 && mouse_y <= win->y + 25) {
+                        // --- Window Controls (Title Bar) ---
+                        if (mouse_y <= win->y + 25) {
+                             // Close [X] (Rightmost)
+                             if (mouse_x >= win->x + win->w - 22) {
                             close_window(window_count - 1);
                         }
-                        // Check Title Bar (Dragging)
-                        else if (mouse_y <= win->y + 25) {
+                             // Maximize [^] (Middle)
+                             else if (mouse_x >= win->x + win->w - 44) {
+                                 if (!win->fullscreen) {
+                                     // Save old state
+                                     win->old_x = win->x; win->old_y = win->y;
+                                     win->old_w = win->w; win->old_h = win->h;
+                                     // Set fullscreen (minus taskbar)
+                                     win->x = 0; win->y = 0;
+                                     win->w = screen_width; win->h = screen_height - 40;
+                                     win->fullscreen = 1;
+                                     win->dragging = 0;
+                                 } else {
+                                     // Restore
+                                     win->x = win->old_x; win->y = win->old_y;
+                                     win->w = win->old_w; win->h = win->old_h;
+                                     win->fullscreen = 0;
+                                 }
+                             }
+                             // Minimize [-] (Leftmost)
+                             else if (mouse_x >= win->x + win->w - 66) {
+                                 win->minimized = 1;
+                             }
+                             // Title Bar Dragging (if not buttons and not fullscreen)
+                             else if (!win->fullscreen) {
                             win->dragging = 1;
                         }
+                        }
+                        
                         // Check Settings Buttons
                         else if (win->type == MODE_SETTINGS) {
                              if (mouse_x >= win->x + 120 && mouse_x <= win->x + 220 &&
                                  mouse_y >= win->y + 45 && mouse_y <= win->y + 65) {
                                  wallpaper_mode = !wallpaper_mode;
+                                 init_desktop_buffer(wallpaper_mode);
                              }
                         }
                         // Check File Manager clicks
@@ -982,25 +1436,68 @@ void kernel_main(struct multiboot_info* mbinfo) {
         // Handle Dragging
         if (mouse_left && window_count > 0) {
             window_t* active = &windows[window_count - 1];
-            if (active->dragging) {
+            if (active->resizing) {
+                active->w += mouse_dx;
+                active->h += mouse_dy;
+
+                // Clamp to minimum size
+                if (active->w < 150) active->w = 150;
+                if (active->h < 100) active->h = 100;
+            } else if (active->dragging && !active->fullscreen) {
                 active->x += mouse_dx;
                 active->y += mouse_dy;
             }
         } else if (!mouse_left && window_count > 0) {
             windows[window_count - 1].dragging = 0;
+            windows[window_count - 1].resizing = 0;
+        }
+
+        // Handle mouse-look for the game
+        if (window_count > 0) {
+            window_t* active = &windows[window_count - 1];
+            if (active->type == MODE_GAME && mouse_dx != 0) {
+                // Apply a small, fixed rotation for each unit of mouse_dx.
+                // This is proportional but avoids complex sin/cos calculations.
+                
+                // Use a smaller angle for mouse than keyboard for smoothness.
+                // rot_angle = 0.02 radians. cos(0.02) ~ 0.9998, sin(0.02) ~ 0.02
+                int rotCos = 65522; // cos(0.02) * 65536
+                int rotSin = 1310;  // sin(0.02) * 65536
+
+                // Determine direction and number of rotation steps
+                int steps = mouse_dx;
+                if (steps < 0) {
+                    steps = -steps;
+                    rotSin = -rotSin; // Negating sin rotates in the opposite direction
+                }
+
+                // To prevent stalling on huge mouse movements, cap the steps per frame.
+                if (steps > 20) steps = 20;
+
+                for (int i = 0; i < steps; i++) {
+                    int oldDirX = p_dir_x;
+                    p_dir_x = ((p_dir_x * rotCos) - (p_dir_y * rotSin)) >> 16;
+                    p_dir_y = ((oldDirX * rotSin) + (p_dir_y * rotCos)) >> 16;
+                    int oldPlaneX = p_plane_x;
+                    p_plane_x = ((p_plane_x * rotCos) - (p_plane_y * rotSin)) >> 16;
+                    p_plane_y = ((oldPlaneX * rotSin) + (p_plane_y * rotCos)) >> 16;
+                }
+            }
         }
 
         prev_mouse_left = mouse_left;
         prev_mouse_x = mouse_x;
         prev_mouse_y = mouse_y;
 
-        // 1. Clear Screen / Draw Background
-        draw_desktop(wallpaper_mode);
+        // 1. Prepare frame by copying desktop from static buffer
+        gui_prepare_frame();
         draw_taskbar();
 
         // 2. Draw UI Elements
         for(int i = 0; i < window_count; i++) {
+            if (!windows[i].minimized) {
             draw_window(&windows[i]);
+            }
         }
         if (start_menu_open) draw_start_menu();
 
@@ -1010,7 +1507,5 @@ void kernel_main(struct multiboot_info* mbinfo) {
         // 4. Render the frame
         screen_update();
 
-        // 5. Wait for interrupt (cools down CPU and syncs with mouse IRQ)
-        asm volatile("hlt");
     }
 }

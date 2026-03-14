@@ -8,5 +8,6 @@ void strcpy(char* dest, const char* src);
 int strlen(const char* str);
 void *memmove(void *dest, const void *src, size_t n);
 char* strcat(char* dest, const char* src);
+void* memcpy(void* dest, const void* src, size_t n);
 
 #endif

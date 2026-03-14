@@ -1,5 +1,6 @@
 #include "string.h"
 #include <stddef.h>
+#include <stdint.h>
 
 int strcmp(const char* s1, const char* s2) {
     while (*s1 && (*s1 == *s2)) {
@@ -47,4 +48,12 @@ char* strcat(char* dest, const char* src) {
     while (*dest) dest++;
     while ((*dest++ = *src++));
     return tmp;
+}
+
+void* memcpy(void* dest, const void* src, size_t n) {
+    // Use 32-bit copies for speed. Assumes n is a multiple of 4.
+    uint32_t* d = dest;
+    const uint32_t* s = src;
+    for (size_t i = 0; i < n / 4; i++) d[i] = s[i];
+    return dest;
 }

@@ -35,13 +35,14 @@ To build and run MinOS, you will need a standard Linux environment (such as Ubun
 
 - `build-essential` (provides `make` and `gcc`)
 - `nasm` (Netwide Assembler)
+- `gcc-multilib` (for 32-bit compilation on 64-bit systems)
 - `grub-mkrescue` (often part of `grub2-common` or `grub-common`)
 - `qemu-system-i386` (for running the OS)
 
 You can typically install these on a Debian-based system with:
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential nasm qemu-system-i386 grub-common
+sudo apt-get install build-essential nasm gcc-multilib qemu-system-i386 grub-common
 ```
 
 ### Build Instructions

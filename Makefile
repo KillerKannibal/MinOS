@@ -27,7 +27,7 @@ $(ISO): $(KERNEL) $(INITRD) src/grub.cfg
 	@grub-mkrescue -o $(ISO) isodir > /dev/null 2>&1
 
 $(KERNEL): $(OBJS) src/linker.ld
-	@ld -m elf_i386 -T src/linker.ld -o $(KERNEL) $(OBJS)
+	@$(CC) -m32 -T src/linker.ld -o $(KERNEL) -ffreestanding -O2 -nostdlib $(OBJS) -lgcc
 
 build/%.o: src/%.c src/gdt.h src/idt.h src/io.h src/multiboot.h src/font.h src/fs.h src/string.h src/gui.h
 	@mkdir -p build

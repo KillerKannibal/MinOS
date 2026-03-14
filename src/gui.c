@@ -1,5 +1,6 @@
 #include "gui.h"
 #include "font.h"
+#include "string.h"
 
 // Graphics globals defined here
 uint32_t* lfb;
@@ -10,6 +11,7 @@ uint32_t screen_pitch;
 
 // The backbuffer is defined here. It's static so it's private to the GUI module.
 static uint32_t backbuffer[1920 * 1080];
+static uint32_t static_buffer[1920 * 1080];
 
 void init_vga(struct multiboot_info* mbinfo) {
     lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr_lo;
@@ -51,20 +53,18 @@ void draw_string(const char* str, int x, int y, uint32_t color) {
 }
 
 void screen_update() {
-    uint8_t* lfb_row_ptr = (uint8_t*)lfb;
+    // This is safer and faster than a single memcpy if pitch != width*4
+    uint8_t* lfb_ptr = (uint8_t*)lfb;
     uint32_t* backbuffer_ptr = backbuffer;
 
     for (uint32_t y = 0; y < screen_height; y++) {
-        uint32_t* lfb_pixel_row = (uint32_t*)lfb_row_ptr;
-        for (uint32_t x = 0; x < screen_width; x++) {
-            lfb_pixel_row[x] = backbuffer_ptr[x];
-        }
-        lfb_row_ptr += screen_pitch;
+        memcpy(lfb_ptr, backbuffer_ptr, screen_width * 4);
+        lfb_ptr += screen_pitch;
         backbuffer_ptr += screen_width;
     }
 }
 
-void draw_desktop(int wallpaper_mode) {
+void init_desktop_buffer(int wallpaper_mode) {
     if (wallpaper_mode == 0) {
         // Nice vertical gradient background
         // Top: 0x151628 (Deep Dark Blue), Bottom: 0x243B55 (Slate Blue)
@@ -74,15 +74,21 @@ void draw_desktop(int wallpaper_mode) {
             uint8_t b = 0x28 + (y * (0x55 - 0x28) / screen_height);
             uint32_t color = (r << 16) | (g << 8) | b;
             
-            uint32_t* row = backbuffer + (y * screen_width);
+            uint32_t* row = static_buffer + (y * screen_width);
             for (uint32_t x = 0; x < screen_width; x++) {
                 row[x] = color;
             }
         }
     } else {
         // Solid Color (Midnight Blue)
+        uint32_t color = 0x2C3E50;
         for (uint32_t i = 0; i < screen_width * screen_height; i++) {
-            backbuffer[i] = 0x2C3E50; 
+            static_buffer[i] = color; 
         }
     }
+}
+
+void gui_prepare_frame() {
+    // Copy the clean desktop from the static buffer to the working backbuffer.
+    memcpy(backbuffer, static_buffer, screen_width * screen_height * 4);
 }
