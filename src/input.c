@@ -8,6 +8,7 @@
 #include "string.h"
 #include "gui.h"
 #include "utils.h"
+#include "browser.h"
 
 volatile int mouse_x = 512;
 volatile int mouse_y = 384;
@@ -310,6 +311,12 @@ void keyboard_handler() {
             }
         }
 
+        return;
+    }
+
+    // ---------- BROWSER ----------
+    if (active_win->type == MODE_BROWSER) {
+        browser_handle_key(c);
         return;
     }
 

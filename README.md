@@ -1,4 +1,5 @@
 # ExileOS
+![alt text](image.png)
 
 ## Introduction
 
@@ -11,7 +12,7 @@ ExileOS is a 32-bit hobby operating system built from scratch. It is designed to
 - **Graphics**: 1920x1080, 32-bit color graphical mode with a double-buffered display driver.
 - **Window Manager**: A stacking window manager supporting multiple overlapping and draggable windows.
 - **GUI**:
-    - Gradient desktop background with a wallpaper toggle.
+    - Gradient desktop background with a wallpaper toggle. 
     - Taskbar with a Start Menu and a real-time clock (RTC).
 - **Filesystem**: A hybrid VFS combining a read-only TAR-based initial RAM disk (initrd) with a writable in-memory filesystem for creating new files and directories.
 - **Drivers**:

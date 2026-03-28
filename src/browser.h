@@ -10,5 +10,7 @@ extern char browser_url[BROWSER_MAX_URL];
 extern char browser_content[BROWSER_MAX_CONTENT];
 
 void browser_init();
+void browser_handle_key(char c);
+void browser_navigate(const char* url);
 
 #endif
