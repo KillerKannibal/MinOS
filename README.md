@@ -5,6 +5,10 @@
 
 ExileOS is a 32-bit hobby operating system built from scratch. It is designed to boot via GRUB (Multiboot standard) and features a graphical user interface, a window manager, and a suite of basic applications. The project serves as an educational exploration into operating system development, covering concepts from bootloading and interrupt handling to filesystems and graphical user interfaces.
 
+## Contributing to the project
+
+If you would like to contribute to the project, I am looking for some developers who are as passionate about OS development as I am.
+
 ## Features
 
 - **Kernel**: 32-bit protected mode kernel.
