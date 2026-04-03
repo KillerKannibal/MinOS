@@ -1,46 +1,45 @@
+#include <stdint.h>
+#include <string.h>
 #include "idt.h"
 #include "io.h"
 
 struct idt_entry idt[256];
 struct idt_ptr idtp;
 
-extern void idt_load(uint32_t);
+extern void idt_load(uint64_t);
 extern void keyboard_asm_handler();
 extern void irq_common_stub();
 extern void mouse_asm_handler();
 
-void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
-    idt[num].base_lo = (base & 0xFFFF);
-    idt[num].base_hi = (base >> 16) & 0xFFFF;
-    idt[num].sel     = sel;
-    idt[num].always0 = 0;
-    idt[num].flags   = flags;
+static void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist) {
+    idt[num].offset_low = base & 0xFFFF;
+    idt[num].selector = sel;
+    idt[num].ist = ist & 0x7;
+    idt[num].type_attr = flags;
+    idt[num].offset_mid = (base >> 16) & 0xFFFF;
+    idt[num].offset_high = (base >> 32) & 0xFFFFFFFF;
+    idt[num].zero = 0;
 }
 
 void init_idt() {
-    idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
-    idtp.base  = (uint32_t)&idt;
+    memset(&idt, 0, sizeof(idt));
 
-    // 1. Point everything to a safe stub first to prevent "Freak Outs"
-    for(int i = 0; i < 256; i++) {
-        idt_set_gate(i, (uint32_t)irq_common_stub, 0x08, 0x8E);
+    idtp.limit = sizeof(idt) - 1;
+    idtp.base = (uint64_t)&idt;
+
+    for (int i = 0; i < 256; i++) {
+        idt_set_gate(i, (uint64_t)irq_common_stub, 0x08, 0x8E, 0);
     }
 
-    // 2. Remap the PIC
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
     outb(0x21, 0x01); outb(0xA1, 0x01);
-    
-    // Unmask Keyboard (IRQ 1) AND Cascade (IRQ 2).
-    // IRQ 2 MUST be unmasked for the Slave PIC (Mouse) to work.
-    outb(0x21, 0xF9); 
-    // Mask everything except Mouse (IRQ 12, which is Slave IRQ 4)
+    outb(0x21, 0xF9);
     outb(0xA1, 0xEF);
 
-    // 3. Set the real keyboard handler
-    idt_set_gate(0x21, (uint32_t)keyboard_asm_handler, 0x08, 0x8E);
-    idt_set_gate(44, (unsigned)mouse_asm_handler, 0x08, 0x8E);
+    idt_set_gate(0x21, (uint64_t)keyboard_asm_handler, 0x08, 0x8E, 0);
+    idt_set_gate(44,  (uint64_t)mouse_asm_handler,    0x08, 0x8E, 0);
 
-    idt_load((uint32_t)&idtp);
+    idt_load((uint64_t)&idtp);
 }

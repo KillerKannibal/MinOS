@@ -1,9 +1,8 @@
-; Multiboot header constants
-MBALIGN  equ  1<<0
-MEMINFO  equ  1<<1
-VIDINFO  equ  1<<2
-MAGIC    equ  0x1BADB002
-FLAGS    equ  MBALIGN | MEMINFO | VIDINFO
+; Diagnostic boot stub - extremely minimal
+MBALIGN  equ 1<<0
+MEMINFO  equ 1<<1
+MAGIC    equ 0x1BADB002
+FLAGS    equ MBALIGN | MEMINFO
 CHECKSUM equ -(MAGIC + FLAGS)
 
 section .multiboot
@@ -11,82 +10,125 @@ align 4
     dd MAGIC
     dd FLAGS
     dd CHECKSUM
-    ; Address fields (Offsets 12-28). Even though bit 16 is not set, 
-    ; placeholders are required so that graphics fields reach offset 32.
-    dd 0 ; header_addr
-    dd 0 ; load_addr
-    dd 0 ; load_end_addr
-    dd 0 ; bss_end_addr
-    dd 0 ; entry_addr
-    ; Graphics fields (Offset 32)
-    dd 0             ; mode_type (0 for linear framebuffer)
-    dd 800           ; width
-    dd 600           ; height
-    dd 32            ; bpp
-
-; Add a note to prevent the linker from complaining about an executable stack.
-section .note.GNU-stack noalloc noexec nowrite progbits
 
 section .bss
 align 16
-stack_bottom:
-    resb 16384 ; 16 KiB stack
-stack_top:
+    stack: resb 4096
+
+align 4096
+    pml4: resq 512
+    pdpt: resq 512
+    pdt: resq 512
 
 section .text
+bits 32
 global _start
-global gdt_flush
-global idt_load
-
 extern kernel_main
 extern sbss
 extern ebss
 
 _start:
-    ; Quick "Hacker" status print to VGA Text Buffer (0xB8000)
-    ; This writes 'E' 'X' 'I' 'L' 'E' to the top left of the screen
-    mov dword [0xb8000], 0x074c0745 ; 'E' and 'L' (with grey attribute)
-    
-    ; 1. Clear BSS
-    mov edi, sbss
-    
-    ; 1. Clear BSS before we use the stack or any static variables
-    ; This prevents overwriting our own stack/arguments later.
+    ; Output debug char to QEMU console (port 0xE9)
+    mov al, '1'
+    out 0xE9, al
+
+    ; Minimal setup
+    cli
+    cld
+
+    ; Output debug char
+    mov al, '2'
+    out 0xE9, al
+
+    ; Clear BSS (basic C needs this)
     mov edi, sbss
     mov ecx, ebss
     sub ecx, edi
     xor eax, eax
     rep stosb
 
-    ; 2. Initialize our own stack
-    mov esp, stack_top
+    ; Stack setup
+    mov esp, stack + 4096
 
-    ; 3. Pass the multiboot info pointer (in ebx) to the C kernel.
-    push ebx
-    call kernel_main
+    ; Minimal paging: PML4[0] -> PDPT[0] -> PDT (identity map 2M huge pages)
+    mov eax, pdpt
+    or eax, 0x03
+    mov [pml4], eax
 
-    ; Hang if kernel_main ever returns
-    cli
-.hang:
-    hlt
-    jmp .hang
+    mov eax, pdt
+    or eax, 0x03
+    mov [pdpt], eax
 
-gdt_flush:
-    mov eax, [esp+4]
-    lgdt [eax]
-    mov ax, 0x10 ; Kernel Data Segment
+    ; Fill PDT with 512 2MB pages
+    mov edi, pdt
+    mov eax, 0x00000183  ; PRESENT | WRITABLE | HUGE_PAGE
+    mov ecx, 512
+.loop:
+    mov [edi], eax
+    add edi, 8
+    add eax, 0x200000
+    loop .loop
+
+    ; CR4.PAE
+    mov eax, cr4
+    or eax, 0x20
+    mov cr4, eax
+
+    ; CR3 = PML4
+    lea eax, [pml4]
+    mov cr3, eax
+
+    ; EFER.LME
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 0x100
+    wrmsr
+
+    ; CR0.PG
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+
+    ; Load GDT and jump to 64-bit
+    mov al, '3'
+    out 0xE9, al
+
+    lgdt [gdt_ptr]
+
+    mov al, '4'
+    out 0xE9, al
+
+    jmp 0x08:.lm
+
+bits 64
+.lm:
+    mov rax, 0x10
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
     mov ss, ax
-    jmp 0x08:.flush ; Kernel Code Segment
-.flush:
-    mov ax, 0x2B    ; TSS index 5 (5 * 8 = 40 = 0x28) | RPL 3
-    ltr ax
-    ret
 
+    mov rsp, stack + 4096
+    mov rdi, rbx
+    call kernel_main
+
+    cli
+.h:
+    hlt
+    jmp .h
+
+section .data
+align 8
+gdt:
+    dq 0
+    dq 0x00209A0000000000
+    dq 0x0000920000000000
+gdt_len equ $ - gdt
+
+gdt_ptr:
+    dw gdt_len - 1
+    dq gdt
+
+global idt_load
 idt_load:
-    mov eax, [esp+4]
-    lidt [eax]
+    lidt [rdi]
     ret

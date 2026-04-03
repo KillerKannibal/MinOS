@@ -1,61 +1,59 @@
 #include <stdint.h>
-#include "string.h"
+#include <string.h>
 #include "gdt.h"
 
 struct gdt_entry {
-    uint16_t limit_low;
-    uint16_t base_low;
-    uint8_t  base_middle;
-    uint8_t  access;
-    uint8_t  granularity;
-    uint8_t  base_high;
+    uint64_t value;
 } __attribute__((packed));
 
 struct gdt_ptr {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed));
 
-struct gdt_entry gdt[6];
+struct gdt_entry gdt[5];
 struct gdt_ptr gp;
 struct tss_entry tss;
 
-// This is the ASM function we will write in Step 2
-extern void gdt_flush(uint32_t);
+static void append_tss_entry(uint64_t base, uint32_t limit) {
+    uint64_t descriptor_low =
+          (uint64_t)(limit & 0xFFFF)
+        | ((uint64_t)(base & 0xFFFF) << 16)
+        | ((uint64_t)((base >> 16) & 0xFF) << 32)
+        | ((uint64_t)0x89 << 40) // present, ring0, type=9 (available 64-bit TSS)
+        | ((uint64_t)((limit >> 16) & 0xF) << 48)
+        | ((uint64_t)0x0 << 52) // flags: G=0, D/B=0, L=0, AVL=0
+        | ((uint64_t)((base >> 24) & 0xFF) << 56);
 
-void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
-    gdt[num].base_low    = (base & 0xFFFF);
-    gdt[num].base_middle = (base >> 16) & 0xFF;
-    gdt[num].base_high   = (base >> 24) & 0xFF;
-    gdt[num].limit_low   = (limit & 0xFFFF);
-    gdt[num].granularity = (limit >> 16) & 0x0F;
-    gdt[num].granularity |= gran & 0xF0;
-    gdt[num].access      = access;
-}
+    uint64_t descriptor_high = (uint64_t)(base >> 32);
 
-void write_tss(int num, uint16_t ss0, uint32_t esp0) {
-    uint32_t base = (uint32_t)&tss;
-    uint32_t limit = base + sizeof(tss);
-
-    gdt_set_gate(num, base, limit, 0x89, 0x00);
-    memset(&tss, 0, sizeof(tss));
-
-    tss.ss0  = ss0;
-    tss.esp0 = esp0;
-    tss.cs   = 0x08 | 0x03; // Kernel code with RPL 3
-    tss.iomap_base = sizeof(tss);
+    gdt[3].value = descriptor_low;
+    gdt[4].value = descriptor_high;
 }
 
 void init_gdt() {
-    gp.limit = (sizeof(struct gdt_entry) * 6) - 1;
-    gp.base  = (uint32_t)&gdt;
+    memset(&gdt, 0, sizeof(gdt));
+    memset(&tss, 0, sizeof(tss));
 
-    gdt_set_gate(0, 0, 0, 0, 0);                // Null segment
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); // Kernel Code
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Kernel Data
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // User Code
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User Data
-    write_tss(5, 0x10, 0x0);                    // TSS (esp0 set at runtime)
+    gdt[0].value = 0;
+    gdt[1].value = 0x00209A0000000000ULL; // Kernel code
+    gdt[2].value = 0x0000920000000000ULL; // Kernel data
 
-    gdt_flush((uint32_t)&gp);
+    tss.iomap_base = sizeof(tss);
+    append_tss_entry((uint64_t)&tss, sizeof(tss) - 1);
+
+    gp.limit = sizeof(gdt) - 1;
+    gp.base = (uint64_t)&gdt;
+
+    asm volatile("lgdt %[gp]" : : [gp] "m" (gp));
+
+    asm volatile("mov $0x10, %%ax\n"
+                 "mov %%ax, %%ds\n"
+                 "mov %%ax, %%es\n"
+                 "mov %%ax, %%ss\n"
+                 "mov %%ax, %%fs\n"
+                 "mov %%ax, %%gs\n"
+                 : : : "ax");
+
+    asm volatile("ltr %%ax" : : "a" (0x18));
 }

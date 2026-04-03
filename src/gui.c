@@ -21,12 +21,12 @@ void init_vga(struct multiboot_info* mbinfo) {
     // CRITICAL SAFETY CHECK: Prevent buffer overflows
     // If resolution is higher than our arrays, we must stop before corrupting memory.
     if (mbinfo->framebuffer_width > 800 || mbinfo->framebuffer_height > 600) {
-        lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr_lo;
+        lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr;
         for (uint32_t i = 0; i < 10000; i++) lfb[i] = 0xFFFF00; // Yellow warning strip
         while(1);
     }
 
-    lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr_lo;
+    lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr;
     screen_width = mbinfo->framebuffer_width;
     screen_height = mbinfo->framebuffer_height;
     screen_pitch = mbinfo->framebuffer_pitch;

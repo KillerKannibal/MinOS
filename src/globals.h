@@ -8,7 +8,7 @@
 // --- Kernel Information Constants ---
 #define KERNEL_NAME "ExileOS"
 #define KERNEL_VERSION "0.2"
-#define KERNEL_ARCH "x86"
+#define KERNEL_ARCH "x86_64"
 #define KERNEL_VENDOR "KillerKannibal"
 
 // Global Multiboot Info Pointer

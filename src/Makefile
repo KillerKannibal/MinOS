@@ -27,7 +27,7 @@ all: $(ISO)
 
 # The "Thor" Strike - Linking the Kernel
 $(KERNEL): $(OBJS) $(SRCDIR)/linker.ld
-	$(CC) -T $(SRCDIR)/linker.ld -o $(KERNEL) $(OBJS) -m32 -nostdlib -ffreestanding -fno-pie -no-pie -Wl,--build-id=none -lgcc
+	$(CC) -T $(SRCDIR)/linker.ld -o $(KERNEL) $(OBJS) -m64 -nostdlib -ffreestanding -fno-pie -no-pie -Wl,--build-id=none -lgcc
 
 # Compiling C files
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c

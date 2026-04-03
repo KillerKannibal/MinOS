@@ -18,16 +18,22 @@ void ___chkstk_ms() {}
 void __chkstk_ms() {}
 
 void kernel_main(struct multiboot_info* mbinfo) {
-    debug_init(); 
+    debug_init();
+    
+    // Immediate boot confirmation - kernel_main was reached
+    kprint_serial("\n========================================\n");
+    kprint_serial("[BOOT] Kernel entry confirmed in long mode!\n");
+    kprint_serial("========================================\n");
+    
     global_mbinfo = mbinfo;
-    kprint_serial("\n[BOOT] --- ExileOS Kernel Starting ---\n");
+    kprint_serial("[BOOT] --- ExileOS Kernel Starting ---\n");
 
     // Initialize CPU structures
     kprint_serial("[BOOT] Initializing GDT/TSS...\n");
     init_gdt();
-    uint32_t esp;
-    __asm__ volatile("mov %%esp, %0" : "=r"(esp));
-    tss.esp0 = esp;
+    uint64_t rsp;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
+    tss.rsp0 = rsp;
     kprint_serial("[BOOT] Initializing IDT...\n");
     init_idt();
 
