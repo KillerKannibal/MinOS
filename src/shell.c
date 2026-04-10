@@ -21,7 +21,11 @@ void term_scroll() {
     term_buffer[MAX_TERM_LINES - 1][0] = '\0';
 }
 
+extern void kprint_serial(const char* msg);
+
 void term_print(const char* msg) {
+    kprint_serial(msg);
+    kprint_serial("\n");
     term_scroll();
     // Copy message to the last line (safe copy)
     char* dest = term_buffer[MAX_TERM_LINES - 1];

@@ -1,0 +1,13 @@
+
+========================================
+[BOOT] ExileOS Kernel Started in Long Mode
+========================================
+Warning: BPP is not 32!
+Scanning PCI bus for USB controllers...
+Network Stack: Initializing Layer 2 (Ethernet)...
+Network: RTL8139 NIC not found.
+ExileOS> ver
+> ver
+ExileOS Kernel v0.2
+ExileOS> 
+ExileOS> qemu-system-x86_64: terminating on signal 15 from pid 1174031 (timeout)

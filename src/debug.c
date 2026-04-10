@@ -37,11 +37,11 @@ void kprint_serial(const char* str) {
     }
 }
 
-void kprint_hex(uint32_t n) {
+void kprint_hex(uint64_t n) {
     char* hex = "0123456789ABCDEF";
     write_serial('0');
     write_serial('x');
-    for (int i = 28; i >= 0; i -= 4) {
+    for (int i = 60; i >= 0; i -= 4) {
         write_serial(hex[(n >> i) & 0xF]);
     }
 }

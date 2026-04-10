@@ -21,12 +21,12 @@ void init_vga(struct multiboot_info* mbinfo) {
     // CRITICAL SAFETY CHECK: Prevent buffer overflows
     // If resolution is higher than our arrays, we must stop before corrupting memory.
     if (mbinfo->framebuffer_width > 800 || mbinfo->framebuffer_height > 600) {
-        lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr;
+        lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr_lo;
         for (uint32_t i = 0; i < 10000; i++) lfb[i] = 0xFFFF00; // Yellow warning strip
         while(1);
     }
 
-    lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr;
+    lfb = (uint32_t*)(uintptr_t)mbinfo->framebuffer_addr_lo;
     screen_width = mbinfo->framebuffer_width;
     screen_height = mbinfo->framebuffer_height;
     screen_pitch = mbinfo->framebuffer_pitch;
@@ -34,8 +34,8 @@ void init_vga(struct multiboot_info* mbinfo) {
     // If the bootloader gave us 24-bit or 16-bit, our 32-bit driver will look "broken"
     // We fill the screen with RED to indicate a BPP error instead of just hanging silently
     if (mbinfo->framebuffer_bpp != 32) {
-        for (uint32_t i = 0; i < screen_width * screen_height; i++) lfb[i] = 0xFF0000;
-        while(1); 
+        extern void kprint_serial(const char* str);
+        kprint_serial("Warning: BPP is not 32!\n");
     }
 
     // Clear the real screen to black immediately

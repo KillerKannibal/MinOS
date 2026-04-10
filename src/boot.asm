@@ -11,12 +11,11 @@ align 4
     dd MAGIC
     dd FLAGS
     dd CHECKSUM
-    ; Required fields for VIDEO flag (set to 0 for ELF transparency)
-    dd 0, 0, 0, 0, 0 
-    dd 0             ; 0 = Linear graphics mode
-    dd 800           ; Preferred Width
-    dd 600           ; Preferred Height
-    dd 32            ; Preferred Depth (Bits per pixel)
+    ; Video mode fields (required when VIDEO bit is set)
+    dd 0    ; mode_type (0 = linear graphics)
+    dd 800  ; width
+    dd 600  ; height
+    dd 32   ; depth
 
 section .bss
 align 16
@@ -35,43 +34,57 @@ extern sbss
 extern ebss
 
 _start:
-    ; 1. Diagnostic: Started
-    mov al, '1'
-    out 0xE9, al
+    ; Initialize Serial Port (COM1)
+    mov dx, 0x3F8 + 1
+    mov al, 0x00
+    out dx, al
+    mov dx, 0x3F8 + 3
+    mov al, 0x80
+    out dx, al
+    mov dx, 0x3F8 + 0
+    mov al, 0x03
+    out dx, al
+    mov dx, 0x3F8 + 1
+    mov al, 0x00
+    out dx, al
+    mov dx, 0x3F8 + 3
+    mov al, 0x03
+    out dx, al
 
     cli
     cld
 
-    ; 2. Clear BSS
+    ; Clear BSS
     mov edi, sbss
     mov ecx, ebss
     sub ecx, edi
     xor eax, eax
     rep stosb
 
-    ; 3. Stack setup
+    ; Stack setup
     mov esp, stack + 4096
 
-    ; 4. Paging Setup (Identity mapping 0MB to 4096MB via 2MB Huge Pages)
+    ; Paging Setup (Identity mapping 0MB to 4096MB via 2MB Huge Pages)
     ; PML4[0] -> PDPT[0]
-    mov eax, pdpt
-    or eax, 0x03 ; PRESENT | WRITABLE
-    mov [pml4], eax
+    mov eax, pml4
+    xor edx, edx ; Ensure high bits are 0
+    mov [eax], dword pdpt + 0x03 ; PRESENT | WRITABLE
+    mov [eax + 4], dword 0
 
     ; PDPT[0,1,2,3] -> 4 separate Page Directory Tables
     ; This covers 4GB of physical address space
-    mov eax, pdt
-    or eax, 0x03
-    mov [pdpt], eax      ; PDPT entry 0 (0-1GB)
+    mov eax, pdpt
+    mov [eax], dword pdt + 0x03      ; PDPT entry 0 (0-1GB)
+    mov [eax + 4], dword 0
     
-    add eax, 4096
-    mov [pdpt + 8], eax  ; PDPT entry 1 (1-2GB)
+    mov [eax + 8], dword pdt + 4096 + 0x03  ; PDPT entry 1 (1-2GB)
+    mov [eax + 12], dword 0
     
-    add eax, 4096
-    mov [pdpt + 16], eax ; PDPT entry 2 (2-3GB)
+    mov [eax + 16], dword pdt + 8192 + 0x03 ; PDPT entry 2 (2-3GB)
+    mov [eax + 20], dword 0
     
-    add eax, 4096
-    mov [pdpt + 24], eax ; PDPT entry 3 (3-4GB)
+    mov [eax + 24], dword pdt + 12288 + 0x03 ; PDPT entry 3 (3-4GB)
+    mov [eax + 28], dword 0
 
     ; Fill the PDTs with 2048 entries (4 * 512)
     mov edi, pdt
@@ -79,33 +92,30 @@ _start:
     mov ecx, 2048
 .loop_paging:
     mov [edi], eax
+    mov [edi + 4], dword 0
     add edi, 8
     add eax, 0x200000    ; Next 2MB page
     loop .loop_paging
 
-    ; 5. Enable PAE
+    ; Enable PAE
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
 
-    ; 6. Load PML4
-    lea eax, [pml4]
+    ; Load PML4
+    mov eax, pml4
     mov cr3, eax
 
-    ; 7. Enable Long Mode in EFER
+    ; Enable Long Mode in EFER
     mov ecx, 0xC0000080
     rdmsr
     or eax, 0x100
     wrmsr
 
-    ; 8. Enable Paging
+    ; Enable Paging
     mov eax, cr0
     or eax, 0x80000000
     mov cr0, eax
-
-    ; 9. Diagnostic: Entering GDT/Long Mode
-    mov al, '3'
-    out 0xE9, al
 
     lgdt [gdt_ptr]
 
@@ -144,7 +154,7 @@ gdt_len equ $ - gdt
 
 gdt_ptr:
     dw gdt_len - 1
-    dq gdt
+    dd gdt ; 32-bit base for lgdt in 32-bit mode
 
 global idt_load
 idt_load:

@@ -2,6 +2,7 @@
 #include "gdt.h"
 #include "idt.h"
 #include "multiboot.h"
+#include "shell.h"
 #include "gui.h"
 #include "wm.h"
 #include "input.h"
@@ -13,7 +14,10 @@
 #include "rtl8139.h"
 #include "browser.h"
 #include "rndis.h"
+#include "io.h"
+#include "debug.h"
 
+// ExileOS Kernel
 void ___chkstk_ms() {}
 void __chkstk_ms() {}
 
@@ -22,25 +26,21 @@ void kernel_main(struct multiboot_info* mbinfo) {
     
     // Immediate boot confirmation - kernel_main was reached
     kprint_serial("\n========================================\n");
-    kprint_serial("[BOOT] Kernel entry confirmed in long mode!\n");
+    kprint_serial("[BOOT] ExileOS Kernel Started in Long Mode\n");
     kprint_serial("========================================\n");
     
     global_mbinfo = mbinfo;
-    kprint_serial("[BOOT] --- ExileOS Kernel Starting ---\n");
 
     // Initialize CPU structures
-    kprint_serial("[BOOT] Initializing GDT/TSS...\n");
     init_gdt();
     uint64_t rsp;
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
     tss.rsp0 = rsp;
-    kprint_serial("[BOOT] Initializing IDT...\n");
     init_idt();
 
     // Setup Video
-    if (mbinfo->flags & (1 << 6)) {
+    if (mbinfo->flags & (1 << 12)) {
         init_vga(mbinfo);
-        kprint_serial("VGA LFB Initialized\n");
     } else {
         kprint_serial("Error: No VBE LFB found in multiboot info\n");
         while(1);
@@ -52,27 +52,21 @@ void kernel_main(struct multiboot_info* mbinfo) {
     screen_update();
 
     // Drivers & Filesystem
-    kprint_serial("[BOOT] Mounting Filesystem...\n");
     draw_string(" - Initializing Filesystem", 20, 40, 0xAAAAAA);
     screen_update();
 
     uint32_t mod_start = 0;
     if (mbinfo->flags & (1 << 3) && mbinfo->mods_count > 0) {
-        mod_start = ((multiboot_module_t*)mbinfo->mods_addr)->mod_start;
+        mod_start = ((multiboot_module_t*)(uintptr_t)mbinfo->mods_addr)->mod_start;
     }
     init_fs(mod_start);
     
-    kprint_serial("[BOOT] Initializing PS/2 Mouse...\n");
     mouse_install();
-    
-    kprint_serial("[BOOT] Probing PCI Bus...\n");
     pci_init();
 
-    kprint_serial("[BOOT] Starting Network Stack...\n");
     net_init();
     rtl8139_init();
     browser_init();
-    kprint_serial("[BOOT] Initialization Complete.\n");
     
     __asm__ volatile("sti"); // Enable hardware interrupts
 
@@ -80,8 +74,34 @@ void kernel_main(struct multiboot_info* mbinfo) {
     init_desktop_buffer(wallpaper_mode);
     open_window(MODE_SHELL);
 
+    char serial_buffer[256];
+    int serial_idx = 0;
+    kprint_serial("ExileOS> ");
+
     // Executive Loop
     while(1) {
+        // Serial Shell Input
+        if (inb(0x3F8 + 5) & 0x01) { // Data ready
+            char c = inb(0x3F8);
+            if (c == '\r' || c == '\n') {
+                serial_buffer[serial_idx] = '\0';
+                write_serial('\n');
+                exec_command(serial_buffer);
+                serial_idx = 0;
+                kprint_serial("ExileOS> ");
+            } else if (c == 0x08 || c == 0x7F) { // Backspace
+                if (serial_idx > 0) {
+                    serial_idx--;
+                    write_serial(0x08);
+                    write_serial(' ');
+                    write_serial(0x08);
+                }
+            } else if (serial_idx < 255) {
+                serial_buffer[serial_idx++] = c;
+                write_serial(c);
+            }
+        }
+
         wm_update();      // Logic: process mouse, dragging, and focus
         
         gui_prepare_frame(); // Render: Background wallpaper

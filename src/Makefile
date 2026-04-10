@@ -3,10 +3,10 @@ CC = gcc
 AS = nasm
 
 # ExileOS Build Flags
-# -m32: Force 32-bit for the Exile architecture
+# -m64: Target x86_64 architecture
 # -fno-stack-protector: Stop the compiler from asking for libs Thor doesn't have yet
-CFLAGS = -m32 -ffreestanding -fno-stack-protector -fno-pie -fno-leading-underscore -O2 -Wall -Wextra -Isrc
-ASFLAGS = -f elf32
+CFLAGS = -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-leading-underscore -O2 -Wall -Wextra -Isrc
+ASFLAGS = -f elf64
 
 # Project structure
 SRCDIR = src
@@ -53,11 +53,11 @@ $(INITRD):
 
 # Run the full ISO
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -m 256M -vga std -serial stdio -no-reboot -no-shutdown
+	qemu-system-x86_64 -cdrom $(ISO) -m 256M -vga std -serial stdio -no-reboot -no-shutdown
 
 # Fast Test (Direct Kernel Boot) - Best for development
 test: $(KERNEL) $(INITRD)
-	qemu-system-i386 -kernel $(KERNEL) -initrd $(INITRD) -m 256M -vga std -serial stdio -no-reboot -no-shutdown
+	qemu-system-x86_64 -kernel $(KERNEL) -initrd $(INITRD) -m 256M -vga std -serial stdio -no-reboot -no-shutdown
 
 clean:
 	rm -rf $(BUILDDIR) isodir $(ISO) $(INITRD)

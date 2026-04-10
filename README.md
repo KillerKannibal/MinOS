@@ -1,5 +1,5 @@
 # ExileOS
-![alt text](image.png)
+![ExileOS Screenshots](screenshots/image.png)
 
 ## Introduction
 
